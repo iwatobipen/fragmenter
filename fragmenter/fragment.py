@@ -5,11 +5,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import networkx
 from openff.toolkit.topology import Atom, Molecule
-from openff.toolkit.utils import (
-    GLOBAL_TOOLKIT_REGISTRY,
-    ToolkitRegistry,
-    ToolkitWrapper,
-)
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
 
@@ -21,12 +16,7 @@ from fragmenter.chemi import (
     find_stereocenters,
 )
 from fragmenter.states import _enumerate_stereoisomers
-from fragmenter.utils import (
-    default_functional_groups,
-    get_atom_index,
-    get_map_index,
-    global_toolkit_registry,
-)
+from fragmenter.utils import default_functional_groups, get_atom_index, get_map_index
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +48,15 @@ class Fragment(BaseModel):
         description="The map indices of the atoms involved in the bond that the "
         "fragment was built around.",
     )
-
+    
     @property
     def molecule(self) -> Molecule:
         """The fragment represented as an OpenFF molecule object."""
         return Molecule.from_smiles(self.smiles)
 
-
 class FragmentationResult(BaseModel):
     """An object which stores the results of fragmenting a molecule."""
-
+    fractional_bond_orders: List[float]
     parent_smiles: str = Field(
         ...,
         description="A mapped SMILES pattern describing the parent molecule that was "
@@ -81,12 +70,16 @@ class FragmentationResult(BaseModel):
         description="A dictionary storing provenance information about how the "
         "fragments were generated.",
     )
-
+    
     @property
     def parent_molecule(self) -> Molecule:
         """The parent molecule represented as an OpenFF molecule object."""
-        return Molecule.from_smiles(self.parent_smiles)
-
+        mol = Molecule.from_smiles(self.parent_smiles)
+        for idx, bond in enumerate(mol.bonds):
+            bond.fractional_bond_order = self.fractional_bond_orders[idx]
+        return mol
+        #return Molecule.from_smiles(self.parent_smiles)
+    
     @property
     def fragment_molecules(self) -> Dict[BondTuple, Molecule]:
         """A dictionary of the fragment molecules represented as OpenFF molecule
@@ -816,8 +809,8 @@ class Fragmenter(BaseModel, abc.ABC):
         return molecule, stereo, found_functional_groups, found_ring_systems
 
     @abc.abstractmethod
-    def _fragment(self, molecule: Molecule) -> FragmentationResult:
-        """The internal implementation of ``fragment``.
+    def fragment(self, molecule: Molecule) -> FragmentationResult:
+        """Fragments a molecule according to this class' settings.
 
         Parameters
         ----------
@@ -831,48 +824,6 @@ class Fragmenter(BaseModel, abc.ABC):
         """
 
         raise NotImplementedError()
-
-    def fragment(
-        self,
-        molecule: Molecule,
-        toolkit_registry: Optional[Union[ToolkitRegistry, ToolkitWrapper]] = None,
-    ) -> FragmentationResult:
-        """Fragments a molecule according to this class' settings.
-
-        Notes
-        -----
-        * This method is currently *not* guaranteed to be thread safe as it uses and
-          modifies the OpenFF toolkits' ``GLOBAL_TOOLKIT_REGISTRY``.
-
-        Parameters
-        ----------
-        molecule
-            The molecule to fragment.
-        toolkit_registry
-            The underlying cheminformatics toolkits to use for things like conformer
-            generation, WBO computation etc. If no value is provided, the current
-            ``GLOBAL_TOOLKIT_REGISTRY`` will be used. See the OpenFF toolkit
-            documentation for more information.
-
-        Returns
-        -------
-            The results of the fragmentation including the fragments and provenance
-            about the fragmentation.
-        """
-
-        if toolkit_registry is None:
-            toolkit_registry = GLOBAL_TOOLKIT_REGISTRY
-
-        with global_toolkit_registry(toolkit_registry):
-
-            result = self._fragment(molecule)
-
-            result.provenance["toolkits"] = [
-                (toolkit.__class__.__name__, toolkit.toolkit_version)
-                for toolkit in GLOBAL_TOOLKIT_REGISTRY.registered_toolkits
-            ]
-
-        return result
 
     def _default_provenance(self) -> Dict[str, Any]:
         """Returns a dictionary containing default provenance information."""
@@ -931,7 +882,7 @@ class WBOFragmenter(Fragmenter):
         "threshold.",
     )
 
-    def _fragment(self, molecule: Molecule) -> FragmentationResult:
+    def fragment(self, molecule: Molecule) -> FragmentationResult:
         """Fragments a molecule in such a way that the WBO of the bond that a fragment
         is being built around does not change beyond the specified threshold.
         """
@@ -955,6 +906,9 @@ class WBOFragmenter(Fragmenter):
         molecule = assign_elf10_am1_bond_orders(
             molecule, self.wbo_options.max_conformers, self.wbo_options.rms_threshold
         )
+        # Keep fraction bond orders for rendering
+        fractional_bond_orders = [bond.fractional_bond_order for bond in molecule.bonds]
+        
 
         wbo_rotor_bonds = self._get_rotor_wbo(molecule)
 
@@ -973,6 +927,7 @@ class WBOFragmenter(Fragmenter):
         }
 
         return FragmentationResult(
+            fractional_bond_orders=fractional_bond_orders,
             parent_smiles=molecule.to_smiles(mapped=True),
             fragments=[
                 Fragment(smiles=fragment.to_smiles(mapped=True), bond_indices=bond)
@@ -1386,7 +1341,7 @@ class PfizerFragmenter(Fragmenter):
 
     scheme: Literal["Pfizer"] = "Pfizer"
 
-    def _fragment(self, molecule: Molecule) -> FragmentationResult:
+    def fragment(self, molecule: Molecule) -> FragmentationResult:
         """Fragments a molecule according to Pfizer protocol."""
 
         (

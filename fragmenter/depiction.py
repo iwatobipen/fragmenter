@@ -204,6 +204,12 @@ def _rd_render_parent(
     from rdkit.Chem.rdDepictor import Compute2DCoords
 
     rd_parent: Chem.Mol = parent.to_rdkit()
+    try:
+        rdbonds = rd_parent.GetBonds()
+        for rdbond in rdbonds:
+            rdbond.SetProp('bondNote', f"{float(rdbond.GetProp('fractional_bond_order')):.2f}")
+    except:
+        pass
     rd_parent = Chem.RemoveHs(rd_parent)
     Compute2DCoords(rd_parent)
 
@@ -229,6 +235,12 @@ def _rd_render_fragment(
     from rdkit.Chem.rdDepictor import Compute2DCoords
 
     rd_parent: Chem.Mol = parent.to_rdkit()
+    try:
+        rdbonds = rd_parent.GetBonds()
+        for rdbond in rdbonds:
+            rdbond.SetProp('bondNote', f"{float(rdbond.GetProp('fractional_bond_order')):.2f}")
+    except:
+        pass
 
     for atom in rd_parent.GetAtoms():
         atom.SetAtomMapNum(get_map_index(parent, atom.GetIdx(), False))
